@@ -3,6 +3,7 @@
 namespace TestApp
 {
     using Radios.RF24;
+    using System;
     using System.Diagnostics;
     using System.Text;
     using Windows.UI.Core;
@@ -29,8 +30,7 @@ namespace TestApp
         {
             this.InitializeComponent();
             SendButton.Click += ButtonSend_Click;
-
-            Debug.WriteLine("THIS IS A TEST COMMENT");
+            
             Radio = new RF24();
 
             Radio.OnDataReceived += Radio_OnDataReceived;
@@ -42,9 +42,12 @@ namespace TestApp
             Radio.Channel = CHANNEL;
             
             Radio.IsEnabled = true;
-            var myAddress = Radio.Address;
-            Debug.WriteLine("I am " + new string(Encoding.UTF8.GetChars(myAddress)));
 
+            PowerLevel.ItemsSource = Enum.GetValues(typeof(PowerLevel));
+            DataRate.ItemsSource = Enum.GetValues(typeof(DataRate));
+            DataContext = Radio;
+
+            Debug.WriteLine("Address: " + Encoding.UTF8.GetString(Radio.Address));
             Debug.WriteLine("PA: " + Radio.PowerLevel);
             Debug.WriteLine("IsAutoAcknowledge: " + Radio.IsAutoAcknowledge);
             Debug.WriteLine("Channel: " + Radio.Channel);
@@ -55,8 +58,8 @@ namespace TestApp
             Debug.WriteLine("Frequency: " + Radio.Frequency);
             Debug.WriteLine("IsInitialized: " + Radio.IsInitialized);
             Debug.WriteLine("IsPowered: " + Radio.IsPowered);
-
-            isInitialized = true;
+            
+            isInitialized = true;            
         }
 
         private void ButtonSend_Click(object sender, RoutedEventArgs e)
