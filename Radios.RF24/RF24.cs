@@ -83,7 +83,7 @@
         {
             get
             {
-                return (byte)(Execute(Commands.R_RX_PL_WID, 0x00, new byte[1])[1] & 0x7F);
+                return (byte)(Execute(Commands.R_REGISTER, Registers.RF_CH, new byte[1])[1] & 0x7F);
             }
             set
             {
