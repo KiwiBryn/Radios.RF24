@@ -21,8 +21,6 @@ namespace TestApp
         private const byte CHANNEL = 10;
         private byte[] MY_ADDRESS = Encoding.UTF8.GetBytes("MYPI2");
 
-        private string[] MESSAGES = {"Message1", "TestMessage", "Another message", "this one is a really really really really long message compared to the others"};
-
         public RF24 Radio;
         bool isInitialized = false;
 
