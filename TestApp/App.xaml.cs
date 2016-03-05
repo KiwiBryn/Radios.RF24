@@ -1,4 +1,4 @@
-﻿namespace TestAppUWP
+﻿namespace TestApp
 {
     using System;
     using Windows.ApplicationModel;
