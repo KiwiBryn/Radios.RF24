@@ -333,6 +333,99 @@
             }
         }
 
+        /// <summary>
+        ///   Tells whether or not there is data ready to be read.
+        /// </summary>
+        public bool IsDataAvailable
+        {
+            get
+            {
+                byte[] status = Execute(Commands.R_REGISTER, Registers.FIFO_STATUS, new byte[1]);
+                return (status[1] & (1 << Bits.RX_EMPTY)) == 0;
+            }
+        }
+
+        /// <summary>
+        ///   Pin used as the chip enable pin.
+        /// </summary>
+        /// <remarks>Should be capable of being set to Output</remarks>
+        public byte ChipEnablePin
+        {
+            get
+            {
+                return (byte)_cePin.PinNumber;
+            }
+            set
+            {
+                if (_cePin != null && value == _cePin.PinNumber)
+                {
+                    return;
+                }
+
+                var gpio = GpioController.GetDefault();
+
+                if (_cePin != null)
+                {
+                    _cePin.Dispose();
+                    _cePin = null;
+                }
+
+                if (gpio == null)
+                {
+                    throw new ArgumentException("GPIO Initialization failed.", "ChipEnablePin");
+                }
+                else
+                {
+                    _cePin = gpio.OpenPin(value);
+                    _cePin.SetDriveMode(GpioPinDriveMode.Output);
+                    _cePin.Write(GpioPinValue.Low);
+                }
+            }
+        }
+
+        /// <summary>
+        ///   Pin used for interrupt driven communication. Set to null to disable interrupt driven communication.
+        /// </summary>
+        /// <remarks>Should be a PullUp pin that can be set to input</remarks>
+        public byte? InterruptPin
+        {
+            get
+            {
+                return _irqPin == null ? (byte?)null : (byte)_irqPin.PinNumber;
+            }
+            set
+            {
+                if (value == null)
+                {
+                    if (_irqPin != null)
+                    {
+                        _irqPin.Dispose();
+                        _irqPin = null;
+                    }
+                }
+                else if (_irqPin != null && value == _irqPin.PinNumber)
+                {
+                    return;
+                }
+                else
+                {
+                    var gpio = GpioController.GetDefault();
+
+                    if (gpio == null)
+                    {
+                        throw new ArgumentException("GPIO Initialization failed.", "InterruptPin");
+                    }
+                    else
+                    {
+                        _irqPin = gpio.OpenPin((byte)value);
+                        _irqPin.SetDriveMode(GpioPinDriveMode.InputPullUp);
+                        _irqPin.Write(GpioPinValue.High);
+                        _irqPin.ValueChanged += _irqPin_ValueChanged;
+                    }
+                }                
+            }
+        }
+
         #endregion Properties
 
         #region Public Members
@@ -358,30 +451,15 @@
         /// <param name="interruptPin">
         ///   Number representing the interrupt pin. This should be a Pull-up pin, and will drive Input
         /// </param>
-        public void Initialize(byte chipEnablePin, byte chipSelectLine, byte interruptPin)
+        public void Initialize(byte chipEnablePin, byte chipSelectLine, byte? interruptPin = null)
         {
-            var gpio = GpioController.GetDefault();
+            ChipEnablePin = chipEnablePin;
+            InterruptPin = interruptPin;
 
-            if (gpio == null)
-            {
-                Debug.WriteLine("GPIO Initialization failed.");
-            }
-            else
-            {
-                _cePin = gpio.OpenPin(chipEnablePin);
-                _cePin.SetDriveMode(GpioPinDriveMode.Output);
-                _cePin.Write(GpioPinValue.Low);
-                
-                _irqPin = gpio.OpenPin((byte)interruptPin);
-                _irqPin.SetDriveMode(GpioPinDriveMode.InputPullUp);
-                _irqPin.Write(GpioPinValue.High);
-                _irqPin.ValueChanged += _irqPin_ValueChanged;
-            }
-            
             try
             {
                 var settings = new SpiConnectionSettings(chipSelectLine);
-                settings.ClockFrequency = 2000000;
+                settings.ClockFrequency = 8000000;
                 settings.Mode = SpiMode.Mode0;
 
                 SpiController controller = SpiController.GetDefaultAsync().AsTask().GetAwaiter().GetResult();
@@ -522,7 +600,32 @@
 
             return new Status(readBuffer[0]);
         }
-                
+
+        /// <summary>
+        ///   Reads data from the chip. Should be used with IsDataAvailable property
+        /// </summary>
+        /// <returns></returns>
+        public byte[] Read()
+        {
+            // Disable RX/TX
+            IsEnabled = false;
+
+            // Set PRX
+            SetReceiveMode();
+
+            var status = GetStatus();
+            byte[] payload = ReadPayload(ref status);
+            Execute(Commands.W_REGISTER, Registers.STATUS, new[] { (byte)(1 << Bits.MAX_RT | 1 << Bits.RX_DR | 1 << Bits.TX_DS) });
+
+            // Enable RX
+            IsEnabled = true;
+
+            byte[] payloadWithoutCommand = new byte[payload.Length - 1];
+            Array.Copy(payload, 1, payloadWithoutCommand, 0, payload.Length - 1);
+
+            return payloadWithoutCommand;
+        }
+
         /// <summary>
         ///   Send bytes to given address. This is a non blocking method.
         /// </summary>
@@ -535,7 +638,7 @@
         /// <param name="acknowledge">
         ///   Sets whether or not it is expected to receive an ack packet
         /// </param>
-        public void SendTo(byte[] address, byte[] bytes, bool acknowledge = true)
+        public bool SendTo(byte[] address, byte[] bytes, bool acknowledge = true)
         {
             // Chip enable low
             IsEnabled = false;
@@ -554,6 +657,35 @@
 
             // Pulse for CE -> starts the transmission.
             IsEnabled = true;
+
+            // Signal success if polling. Otherwise, let the interrupt handle it
+            if (InterruptPin == null)
+            {
+                _transmitSuccessFlag.Reset();
+                _transmitFailedFlag.Reset();
+
+                // TODO: Added this to help with polling - check to see if it works.
+                SetReceiveMode();
+
+                Execute(Commands.W_REGISTER, Registers.STATUS, new[] { (byte)(1 << Bits.MAX_RT | 1 << Bits.RX_DR | 1 << Bits.TX_DS) });
+
+                var status = GetStatus();
+
+                HandleStatus(status);
+
+                if (status.DataSent)
+                {
+                    _transmitSuccessFlag.Set();
+                    return true;
+                }
+                else
+                {
+                    _transmitFailedFlag.Set();
+                    return false;
+                }
+            }
+
+            return true; // TODO: Is this ok?
         }
 
         /// <summary>
@@ -603,6 +735,8 @@
         private readonly ManualResetEvent _transmitSuccessFlag;
         private readonly ManualResetEvent _transmitFailedFlag;
         private const byte MAX_CHANNEL = 127;
+        private const int MAX_PACKET_SIZE = 32;
+        private const int MAX_BUFFERS = 3;
 
         #endregion Private Data
 
@@ -663,6 +797,65 @@
                         });
         }
 
+        private void HandleStatus(Status status)
+        {
+            if (status.ResendLimitReached)
+            {
+                FlushTransferBuffer();
+
+                // Clear MAX_RT bit in status register
+                Execute(Commands.W_REGISTER, Registers.STATUS, new[] { (byte)(1 << Bits.MAX_RT) });
+            }
+
+            if (status.TxFull)
+            {
+                FlushTransferBuffer();
+            }
+
+            if (status.DataSent)
+            {
+                // Clear TX_DS bit in status register
+                Execute(Commands.W_REGISTER, Registers.STATUS, new[] { (byte)(1 << Bits.TX_DS) });
+            }
+        }
+
+        private byte[] ReadPayload(ref Status status)
+        {
+            byte[] payload = null;
+
+            if (status == null)
+            {
+                status = GetStatus();
+            }
+
+            var payloadCorrupted = false;
+
+            if (status.DataReady)
+            {
+                if (!status.RxEmpty)
+                {
+                    // Read payload size
+                    var payloadLength = Execute(Commands.R_RX_PL_WID, 0x00, new byte[1]);
+
+                    // this indicates corrupted data
+                    if (payloadLength[1] > 32)
+                    {
+                        payloadCorrupted = true;
+
+                        // Flush anything that remains in buffer
+                        FlushReceiveBuffer();
+                    }
+                    else
+                    {
+                        // Read payload data
+                        payload = Execute(Commands.R_RX_PAYLOAD, 0x00, new byte[payloadLength[1]]);
+                    }
+                }
+            }
+
+            return payload;
+        }
+
         private void _irqPin_ValueChanged(GpioPin sender, GpioPinValueChangedEventArgs args)
         {
             Debug.WriteLine("Interrupt Triggered: " + args.Edge.ToString());
@@ -685,42 +878,26 @@
                 // Set PRX
                 SetReceiveMode();
 
+                var status = GetStatus();
+
                 // there are 3 rx pipes in rf module so 3 arrays should be enough to store incoming data
                 // sometimes though more than 3 data packets are received somehow
-                var payloads = new byte[6][];
-
-                var status = GetStatus();
-                byte payloadCount = 0;
-                var payloadCorrupted = false;
+                byte[][] payloads = new byte[MAX_PACKET_SIZE * MAX_BUFFERS * 2][];
+                int currentPayload = 0;
 
                 if (status.DataReady)
                 {
                     while (!status.RxEmpty)
                     {
-                        // Read payload size
-                        var payloadLength = Execute(Commands.R_RX_PL_WID, 0x00, new byte[1]);
-
-                        // this indicates corrupted data
-                        if (payloadLength[1] > 32)
+                        if (currentPayload >= payloads.Length)
                         {
-                            payloadCorrupted = true;
-
-                            // Flush anything that remains in buffer
+                            Debug.WriteLine("Unexpected payloadCount value = " + currentPayload);
                             FlushReceiveBuffer();
                         }
                         else
                         {
-                            if (payloadCount >= payloads.Length)
-                            {
-                                Debug.WriteLine("Unexpected payloadCount value = " + payloadCount);
-                                FlushReceiveBuffer();
-                            }
-                            else
-                            {
-                                // Read payload data
-                                payloads[payloadCount] = Execute(Commands.R_RX_PAYLOAD, 0x00, new byte[payloadLength[1]]);
-                                payloadCount++;
-                            }
+                            payloads[currentPayload] = ReadPayload(ref status);
+                            currentPayload++;
                         }
 
                         // Clear RX_DR bit 
@@ -729,39 +906,17 @@
                     }
                 }
 
-                if (status.ResendLimitReached)
-                {
-                    FlushTransferBuffer();
-
-                    // Clear MAX_RT bit in status register
-                    Execute(Commands.W_REGISTER, Registers.STATUS, new[] { (byte)(1 << Bits.MAX_RT) });
-                }
-
-                if (status.TxFull)
-                {
-                    FlushTransferBuffer();
-                }
-
-                if (status.DataSent)
-                {
-                    // Clear TX_DS bit in status register
-                    Execute(Commands.W_REGISTER, Registers.STATUS, new[] { (byte)(1 << Bits.TX_DS) });
-                    Debug.WriteLine("Data Sent!");
-                }
+                HandleStatus(status);
 
                 // Enable RX
                 IsEnabled = true;
 
-                if (payloadCorrupted)
+                if (currentPayload > 0)
                 {
-                    Debug.WriteLine("Corrupted data received");
-                }
-                else if (payloadCount > 0)
-                {
-                    if (payloadCount > payloads.Length)
-                        Debug.WriteLine("Unexpected payloadCount value = " + payloadCount);
+                    if (currentPayload > payloads.Length)
+                        Debug.WriteLine("Unexpected payloadCount value = " + currentPayload);
 
-                    for (var i = 0; i < System.Math.Min(payloadCount, payloads.Length); i++)
+                    for (var i = 0; i < System.Math.Min(currentPayload, payloads.Length); i++)
                     {
                         var payload = payloads[i];
                         var payloadWithoutCommand = new byte[payload.Length - 1];

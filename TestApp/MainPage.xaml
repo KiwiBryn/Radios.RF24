@@ -32,6 +32,7 @@
             <RowDefinition Height="40"/>
             <RowDefinition Height="40"/>
             <RowDefinition Height="40"/>
+            <RowDefinition Height="40"/>
         </Grid.RowDefinitions>
 
         <TextBlock Grid.Column="0" Grid.Row="0" Grid.ColumnSpan="2" FontSize="24" VerticalAlignment="Center" HorizontalAlignment="Center">RF24 Test App</TextBlock>
@@ -77,5 +78,8 @@
 
         <TextBlock Grid.Column="0" Grid.Row="14" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0">Powered:</TextBlock>
         <CheckBox Grid.Column="1" Grid.Row="14" Name="Powered" IsChecked="{Binding IsPowered}" />
+
+        <TextBlock Grid.Column="0" Grid.Row="15" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,10,0">Enable Interrupts:</TextBlock>
+        <CheckBox Grid.Column="1" Grid.Row="15" Name="EnableInterrupt" IsChecked="True" />
     </Grid>
 </Page>
